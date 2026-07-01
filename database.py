@@ -24,8 +24,13 @@ async def init_db():
                 free_used_today INT DEFAULT 0,
                 free_reset_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                 is_banned BOOLEAN DEFAULT FALSE,
+                channel_bonus_given BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
+        """)
+        # на случай если таблица users уже была создана раньше без этой колонки
+        await conn.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_bonus_given BOOLEAN DEFAULT FALSE
         """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
