@@ -54,6 +54,21 @@ async def init_db():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS referral_events (
+                id SERIAL PRIMARY KEY,
+                code TEXT NOT NULL,
+                user_id BIGINT,
+                event_type TEXT NOT NULL,
+                timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_referral_events_code ON referral_events (code)
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_referral_events_user_id ON referral_events (user_id)
+        """)
 
 
 async def close_db():
@@ -262,19 +277,27 @@ async def give_channel_bonus(user_id: int) -> bool:
             """, user_id)
             return True
 
-async def track_referral_click(code: str):
+async def track_referral_click(code: str, user_id: int):
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE referrals SET clicks = clicks + 1
             WHERE code = $1
         """, code)
+        await conn.execute("""
+            INSERT INTO referral_events (code, user_id, event_type)
+            VALUES ($1, $2, 'click')
+        """, code, user_id)
 
-async def track_referral_conversion(code: str):
+async def track_referral_conversion(code: str, user_id: int):
     async with pool.acquire() as conn:
         await conn.execute("""
             UPDATE referrals SET conversions = conversions + 1
             WHERE code = $1
         """, code)
+        await conn.execute("""
+            INSERT INTO referral_events (code, user_id, event_type)
+            VALUES ($1, $2, 'conversion')
+        """, code, user_id)
 
 async def get_referral(code: str):
     async with pool.acquire() as conn:

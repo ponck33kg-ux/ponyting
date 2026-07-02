@@ -133,9 +133,9 @@ async def cmd_start(message: Message):
             ref_code = args[1][4:]
 
     if ref_code:
-        await track_referral_click(ref_code)
+        await track_referral_click(ref_code, user_id)
         if is_new:
-            await track_referral_conversion(ref_code)
+            await track_referral_conversion(ref_code, user_id)
 
     if char_key:
         character = await _set_character(user_id, char_key, message.from_user.first_name)
