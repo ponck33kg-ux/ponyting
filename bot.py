@@ -17,7 +17,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiohttp import web
 from analytics import log_turn
 from analytics_db import init_db as init_analytics_db
-from database import init_db as init_users_db, close_db, get_user_balance, get_or_create_user, check_and_spend_message, add_messages, give_channel_bonus, track_referral_click, track_referral_conversion
+from database import init_db as init_users_db, close_db, get_user_balance, get_or_create_user, check_and_spend_message, activate_subscription, give_channel_bonus, track_referral_click, track_referral_conversion, MSK
 from redis_client import (
     init_redis, close_redis,
     get_user_character, set_user_character,
@@ -38,11 +38,9 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 CHANNEL_USERNAME = "@po_nyting"
 
-PACKAGES = {
-    "pack_30":  {"stars": 30,  "messages": 10,  "label": "30 ⭐ — 10 сообщений"},
-    "pack_140": {"stars": 140, "messages": 50,  "label": "140 ⭐ — 50 сообщений"},
-    "pack_250": {"stars": 250, "messages": 100, "label": "250 ⭐ — 100 сообщений"},
-    "pack_550": {"stars": 550, "messages": 250, "label": "550 ⭐ — 250 сообщений"},
+SUBSCRIPTIONS = {
+    "sub_week":  {"stars": 250, "days": 7,  "label": "Неделя безлимита — 250 ⭐"},
+    "sub_month": {"stars": 650, "days": 30, "label": "Месяц безлимита — 650 ⭐"},
 }
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
@@ -75,11 +73,12 @@ dp = Dispatcher()
 
 # ── Кнопки ────────────────────────────────────────────────────────────────────
 
-def get_topup_button() -> InlineKeyboardMarkup:
+def get_subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=pack["label"], callback_data=key)]
-        for key, pack in PACKAGES.items()
+        [InlineKeyboardButton(text=sub["label"], callback_data=key)]
+        for key, sub in SUBSCRIPTIONS.items()
     ])
+
     
 def get_channel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -89,9 +88,9 @@ def get_channel_keyboard() -> InlineKeyboardMarkup:
 
 def get_profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐ Пополнить баланс", callback_data="show_topup")],
-        [InlineKeyboardButton(text="📢 Канал Нытика",     url="https://t.me/po_nyting")],
-        [InlineKeyboardButton(text="💌 Support",          url="https://t.me/BestieSupport_Bot")],
+        [InlineKeyboardButton(text="⭐ Оформить подписку", callback_data="show_subscribe")],
+        [InlineKeyboardButton(text="📢 Канал Нытика",      url="https://t.me/po_nyting")],
+        [InlineKeyboardButton(text="💌 Support",           url="https://t.me/BestieSupport_Bot")],
     ])
 
 # ── Команды ───────────────────────────────────────────────────────────────────
@@ -116,7 +115,7 @@ async def cmd_start(message: Message):
     await _set_character(user_id, CHARACTER_KEY, message.from_user.first_name)
 
     await message.answer(
-        "🎁 Подпишись на наш канал и получи +10 сообщений бесплатно!",
+        "🎁 Подпишись на наш канал и получи3 дня подписки бесплатно!",
         reply_markup=get_channel_keyboard()
     )
 
@@ -144,18 +143,17 @@ async def cmd_clear(message: Message):
 @dp.message(Command("subscribe"))
 async def cmd_subscribe(message: Message):
     await message.answer(
-        "Подписка скоро появится здесь 🚧 А пока можно пополнить баланс сообщений:",
-        reply_markup=get_topup_button()
+        "Выбери подписку:",
+        reply_markup=get_subscription_keyboard()
     )
 
-@dp.callback_query(F.data == "show_topup")
-async def show_topup_callback(callback: CallbackQuery):
-    await callback.message.answer("Выбери пакет:", reply_markup=get_topup_button())
+@dp.callback_query(F.data == "show_subscribe")
+async def show_subscription_callback(callback: CallbackQuery):
+    await callback.message.answer("Выбери подписку:", reply_markup=get_subscription_keyboard())
     try:
         await callback.answer()
     except Exception:
         pass
-
 
 # ── Оплата ────────────────────────────────────────────────────────────────────
 
@@ -169,45 +167,46 @@ async def successful_payment(message: Message):
     payload = payment.invoice_payload
 
     try:
-        pack_key, user_id_str = payload.split(":")
+        sub_key, user_id_str = payload.split(":")
         user_id = int(user_id_str)
     except Exception:
         return
 
-    pack = PACKAGES.get(pack_key)
-    if not pack:
+    sub = SUBSCRIPTIONS.get(sub_key)
+    if not sub:
         return
 
-    success = await add_messages(
+    success = await activate_subscription(
         user_id=user_id,
-        messages_amount=pack["messages"],
-        stars_amount=pack["stars"],
-        telegram_charge_id=payment.telegram_payment_charge_id
+        sub_type=sub_key,
+        stars_amount=sub["stars"],
+        telegram_charge_id=payment.telegram_payment_charge_id,
+        duration_days=sub["days"]
     )
 
     if success:
         await message.answer(
-            f"Ура! на твой счёт зачислено {pack['messages']} сообщений 💬"
+            "Подписка активирована, спасибо! 🎉 Теперь можно общаться без ограничений."
         )
 
-@dp.callback_query(F.data.in_(PACKAGES.keys()))
-async def buy_package(callback: CallbackQuery):
-    pack = PACKAGES.get(callback.data)
-    if not pack:
+@dp.callback_query(F.data.in_(SUBSCRIPTIONS.keys()))
+async def buy_subscription(callback: CallbackQuery):
+    sub = SUBSCRIPTIONS.get(callback.data)
+    if not sub:
         try:
-            await callback.answer("пакет не найден")
+            await callback.answer("подписка не найдена")
         except Exception:
             pass
         return
 
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Сообщения для Нытика",
-        description=pack["label"],
+        title="Подписка Нытинг",
+        description=sub["label"],
         payload=f"{callback.data}:{callback.from_user.id}",
         provider_token="",
         currency="XTR",
-        prices=[LabeledPrice(label=pack["label"], amount=pack["stars"])],
+        prices=[LabeledPrice(label=sub["label"], amount=sub["stars"])],
     )
     try:
         await callback.answer()
@@ -233,7 +232,7 @@ async def check_subscription(callback: CallbackQuery):
     given = await give_channel_bonus(user_id)
     if given:
         await callback.answer(
-            "Спасибо за подписку! +10 сообщений зачислено 💖",
+            "Спасибо за подписку на канал! +3 дня безлимита активированы 💖",
             show_alert=True
         )
         await callback.message.delete()
@@ -270,12 +269,12 @@ async def handle_message(message: Message):
 
     if spend_result == "no_messages":
         await message.answer(
-            "Ой, похоже у тебя кончились сообщения 🌸\n"
-            "пополни баланс — и продолжим болтать!",
-            reply_markup=get_topup_button()
+            "Твои 10 дневных бесплатных сообщений на сегодня кончились 🌙\n"
+            "Оформи подписку — и общайся без ограничений:",
+            reply_markup=get_subscription_keyboard()
         )
         return
-
+    
     # ── Запрос к OpenAI ──
     reply = "ой, что-то мне нехорошо, давай попозже поболтаем?"
     try:
@@ -336,13 +335,11 @@ async def handle_message(message: Message):
 
     # ── Уведомление после последнего бесплатного ──
     if spend_result == "last_free":
-        balance_data = await get_user_balance(message.from_user.id)
-        if balance_data["messages_balance"] == 0:
-            await message.answer(
-                "Ой, это было последнее бесплатное сообщение на сегодня 🌸\n"
-                "завтра в полночь (UTC+3) снова 3 бесплатных — или пополни баланс прямо сейчас!",
-                reply_markup=get_topup_button()
-            )
+        await message.answer(
+            "Это было последнее бесплатное сообщение на сегодня 🌙\n"
+            "Завтра в полночь (UTC+3) снова 10 бесплатных — или оформи подписку прямо сейчас:",
+            reply_markup=get_subscription_keyboard()
+        )
 
 
 # ── Вспомогательные функции ───────────────────────────────────────────────────
@@ -361,12 +358,16 @@ async def _set_character(user_id: int, char_key: str, first_name: str) -> dict:
 
 async def _send_profile(user_id: int, reply_to: Message = None):
     balance_data = await get_user_balance(user_id)
-    balance = balance_data["messages_balance"]
-    free_left = balance_data["free_left"]
+
+    if balance_data["subscription_active"]:
+        expires = balance_data["subscription_expires_at"].astimezone(MSK).strftime("%d.%m.%Y")
+        status_line = f"⭐ Подписка активна до {expires}\n\n"
+    else:
+        free_left = balance_data["free_left"]
+        status_line = f"💬 Бесплатных сегодня: {free_left} из 10\n\n"
 
     text = (
-        f"💬 Бесплатных сегодня: {free_left} из 3\n"
-        f"⭐ Куплено сообщений: {balance}\n\n"
+        f"{status_line}"
         f"Иногда нужно просто выговориться ✨ Без осуждения, без непрошеных советов. "
         f"Здесь всегда есть кто-то, готовый выслушать и поддержать ❤️"
     )
@@ -375,7 +376,6 @@ async def _send_profile(user_id: int, reply_to: Message = None):
         await reply_to.answer(text, reply_markup=get_profile_keyboard())
     else:
         await bot.send_message(user_id, text, reply_markup=get_profile_keyboard())
-
 
 # ── HTTP эндпоинты ────────────────────────────────────────────────────────────
 

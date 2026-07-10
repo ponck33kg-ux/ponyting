@@ -33,6 +33,12 @@ async def init_db():
             ALTER TABLE users ADD COLUMN IF NOT EXISTS channel_bonus_given BOOLEAN DEFAULT FALSE
         """)
         await conn.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMP WITH TIME ZONE
+        """)
+        await conn.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_type TEXT
+        """)
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS transactions (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT REFERENCES users(user_id),
@@ -105,12 +111,12 @@ def _next_midnight_msk() -> datetime:
 
 async def check_and_spend_message(user_id: int) -> str:
     """
-    Проверить и списать сообщение.
+    Проверить дневной лимит и активную подписку.
     Возвращает:
       'spend_free'   — списано бесплатное
-      'last_free'    — списано последнее бесплатное (3-е из 3)
-      'spend_paid'   — списано платное сообщение
-      'no_messages'  — нет ни бесплатных ни платных
+      'last_free'    — списано последнее бесплатное (10-е из 10)
+      'subscribed'   — активная подписка, лимит не считается
+      'no_messages'  — бесплатные кончились и подписки нет
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -127,6 +133,9 @@ async def check_and_spend_message(user_id: int) -> str:
 
             now = datetime.now(MSK)
 
+            if user["subscription_expires_at"] and user["subscription_expires_at"] > now:
+                return "subscribed"
+
             # сбросить бесплатные если наступила новая МСК-дата
             free_used = user["free_used_today"]
             reset_at = user["free_reset_at"]
@@ -138,9 +147,8 @@ async def check_and_spend_message(user_id: int) -> str:
                     WHERE user_id = $2
                 """, _next_midnight_msk(), user_id)
 
-            FREE_LIMIT = 3
+            FREE_LIMIT = 10
 
-            # сначала тратим бесплатные
             if free_used < FREE_LIMIT:
                 new_free_used = free_used + 1
                 await conn.execute("""
@@ -151,31 +159,21 @@ async def check_and_spend_message(user_id: int) -> str:
                     return "last_free"
                 return "spend_free"
 
-            # бесплатные кончились — тратим платные
-            balance = user["messages_balance"]
-            if balance > 0:
-                await conn.execute("""
-                    UPDATE users SET messages_balance = messages_balance - 1
-                    WHERE user_id = $1
-                """, user_id)
-                await conn.execute("""
-                    INSERT INTO transactions (user_id, type, messages_amount)
-                    VALUES ($1, 'spend', 1)
-                """, user_id)
-                return "spend_paid"
-
-            # ничего нет
             return "no_messages"
+        
+        # Активировать подписку для пользователя
 
-
-async def add_messages(
+async def activate_subscription(
     user_id: int,
-    messages_amount: int,
+    sub_type: str,
     stars_amount: int,
-    telegram_charge_id: str
+    telegram_charge_id: str,
+    duration_days: int
 ) -> bool:
     """
-    Зачислить сообщения после оплаты.
+    Активировать/продлить подписку.
+    Если подписка ещё активна — дни добавляются к текущей дате окончания.
+    Если истекла или её не было — считается от текущего момента.
     Возвращает False если charge_id уже использован (защита от дублей).
     """
     async with pool.acquire() as conn:
@@ -183,42 +181,52 @@ async def add_messages(
             try:
                 await conn.execute("""
                     INSERT INTO transactions (user_id, type, messages_amount, stars_amount, telegram_charge_id)
-                    VALUES ($1, 'purchase', $2, $3, $4)
-                """, user_id, messages_amount, stars_amount, telegram_charge_id)
+                    VALUES ($1, $2, 0, $3, $4)
+                """, user_id, f"subscription_{sub_type}", stars_amount, telegram_charge_id)
             except asyncpg.UniqueViolationError:
-                # дубль — уже зачислено
                 return False
 
+            user = await conn.fetchrow(
+                "SELECT subscription_expires_at FROM users WHERE user_id = $1", user_id
+            )
+            now = datetime.now(MSK)
+            current_expiry = user["subscription_expires_at"] if user else None
+            base = current_expiry if current_expiry and current_expiry > now else now
+            new_expiry = base + timedelta(days=duration_days)
+
             await conn.execute("""
-                UPDATE users SET messages_balance = messages_balance + $1
-                WHERE user_id = $2
-            """, messages_amount, user_id)
+                UPDATE users
+                SET subscription_expires_at = $1, subscription_type = $2
+                WHERE user_id = $3
+            """, new_expiry, sub_type, user_id)
 
             return True
 
-
 async def get_user_balance(user_id: int) -> dict:
-    """Получить баланс и остаток бесплатных для отображения в профиле/мини-апке."""
+    """Получить статус подписки и остаток бесплатных для профиля."""
     async with pool.acquire() as conn:
         user = await conn.fetchrow(
-            "SELECT messages_balance, free_used_today, free_reset_at FROM users WHERE user_id = $1",
+            "SELECT free_used_today, free_reset_at, subscription_expires_at, subscription_type FROM users WHERE user_id = $1",
             user_id
         )
         if not user:
-            return {"messages_balance": 0, "free_left": 3, "free_total": 3}
+            return {"free_left": 10, "free_total": 10, "subscription_active": False, "subscription_expires_at": None}
 
         now = datetime.now(MSK)
         free_used = user["free_used_today"]
         reset_at = user["free_reset_at"]
 
-        # если новый день — лимит ещё не сброшен но показываем 3
         if reset_at and reset_at.astimezone(MSK).date() < now.date():
             free_used = 0
 
+        subscription_active = bool(user["subscription_expires_at"] and user["subscription_expires_at"] > now)
+
         return {
-            "messages_balance": user["messages_balance"],
-            "free_left": max(0, 3 - free_used),
-            "free_total": 3
+            "free_left": max(0, 10 - free_used),
+            "free_total": 10,
+            "subscription_active": subscription_active,
+            "subscription_expires_at": user["subscription_expires_at"],
+            "subscription_type": user["subscription_type"] if subscription_active else None
         }
 
 
@@ -237,43 +245,36 @@ async def unban_user(user_id: int):
             "UPDATE users SET is_banned = FALSE WHERE user_id = $1", user_id
         )
 
-
-async def grant_messages(user_id: int, amount: int):
-    """Начислить сообщения вручную (для админки)."""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("""
-                UPDATE users SET messages_balance = messages_balance + $1
-                WHERE user_id = $2
-            """, amount, user_id)
-            await conn.execute("""
-                INSERT INTO transactions (user_id, type, messages_amount)
-                VALUES ($1, 'grant', $2)
-            """, user_id, amount)
-
 async def give_channel_bonus(user_id: int) -> bool:
     """
-    Начислить бонус за подписку на канал (10 сообщений, один раз).
+    Начислить бонус за подписку на канал — 3 дня подписки, один раз.
+    Складывается с активной подпиской, как и обычное продление.
     Возвращает True если бонус выдан, False если уже был выдан ранее.
     """
     async with pool.acquire() as conn:
         async with conn.transaction():
             user = await conn.fetchrow(
-                "SELECT channel_bonus_given FROM users WHERE user_id = $1",
+                "SELECT channel_bonus_given, subscription_expires_at FROM users WHERE user_id = $1",
                 user_id
             )
             if not user or user["channel_bonus_given"]:
                 return False
- 
+
+            now = datetime.now(MSK)
+            current_expiry = user["subscription_expires_at"]
+            base = current_expiry if current_expiry and current_expiry > now else now
+            new_expiry = base + timedelta(days=3)
+
             await conn.execute("""
                 UPDATE users
-                SET messages_balance = messages_balance + 10,
+                SET subscription_expires_at = $1,
+                    subscription_type = COALESCE(subscription_type, 'channel_bonus'),
                     channel_bonus_given = TRUE
-                WHERE user_id = $1
-            """, user_id)
+                WHERE user_id = $2
+            """, new_expiry, user_id)
             await conn.execute("""
                 INSERT INTO transactions (user_id, type, messages_amount)
-                VALUES ($1, 'channel_bonus', 10)
+                VALUES ($1, 'channel_bonus', 0)
             """, user_id)
             return True
         
