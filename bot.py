@@ -423,6 +423,12 @@ async def on_shutdown(app: web.Application):
     await close_redis()
 
 def main():
+    if not WEBHOOK_SECRET:
+        raise RuntimeError(
+            "WEBHOOK_SECRET не задан — запуск вебхука без секрета небезопасен: "
+            "входящие апдейты (включая successful_payment) не будут проверяться."
+        )
+
     app = web.Application()
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
