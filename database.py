@@ -177,6 +177,10 @@ async def activate_subscription(
     Возвращает False если charge_id уже использован (защита от дублей).
     """
     async with pool.acquire() as conn:
+        # ВАЖНО: FOR UPDATE ниже защищает от гонки (два почти одновременных платежа
+        # перезаписывают, а не складывают срок подписки) только пока весь блок
+        # обёрнут в conn.transaction(). Если когда-нибудь будешь переиспользовать
+        # этот SELECT отдельно — без транзакции блокировка не работает.
         async with conn.transaction():
             try:
                 await conn.execute("""
@@ -187,7 +191,7 @@ async def activate_subscription(
                 return False
 
             user = await conn.fetchrow(
-                "SELECT subscription_expires_at FROM users WHERE user_id = $1", user_id
+                "SELECT subscription_expires_at FROM users WHERE user_id = $1 FOR UPDATE", user_id
             )
             now = datetime.now(MSK)
             current_expiry = user["subscription_expires_at"] if user else None
@@ -252,9 +256,13 @@ async def give_channel_bonus(user_id: int) -> bool:
     Возвращает True если бонус выдан, False если уже был выдан ранее.
     """
     async with pool.acquire() as conn:
+        # ВАЖНО: FOR UPDATE ниже защищает от гонки (двойное начисление бонуса)
+        # только пока весь блок обёрнут в conn.transaction(). Если когда-нибудь
+        # будешь переиспользовать этот SELECT отдельно — без транзакции блокировка
+        # не работает и защита от гонки молча исчезает.
         async with conn.transaction():
             user = await conn.fetchrow(
-                "SELECT channel_bonus_given, subscription_expires_at FROM users WHERE user_id = $1",
+                "SELECT channel_bonus_given, subscription_expires_at FROM users WHERE user_id = $1 FOR UPDATE",
                 user_id
             )
             if not user or user["channel_bonus_given"]:
@@ -265,13 +273,17 @@ async def give_channel_bonus(user_id: int) -> bool:
             base = current_expiry if current_expiry and current_expiry > now else now
             new_expiry = base + timedelta(days=3)
 
-            await conn.execute("""
+            result = await conn.execute("""
                 UPDATE users
                 SET subscription_expires_at = $1,
                     subscription_type = COALESCE(subscription_type, 'channel_bonus'),
                     channel_bonus_given = TRUE
-                WHERE user_id = $2
+                WHERE user_id = $2 AND channel_bonus_given = FALSE
             """, new_expiry, user_id)
+
+            if result.endswith(" 0"):
+                return False
+
             await conn.execute("""
                 INSERT INTO transactions (user_id, type, messages_amount)
                 VALUES ($1, 'channel_bonus', 0)

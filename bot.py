@@ -259,9 +259,9 @@ async def handle_message(message: Message):
     if not character:
         character = await _set_character(user_id, CHARACTER_KEY, message.from_user.first_name)
 
-    await get_or_create_user(user_id, username=message.from_user.username, first_name=message.from_user.first_name)
-
     # ── Проверка лимита ДО запроса к OpenAI ──
+    # check_and_spend_message уже гарантирует существование пользователя (INSERT ... ON CONFLICT),
+    # отдельный get_or_create_user() здесь был лишним запросом в БД на каждое сообщение
     spend_result = await check_and_spend_message(user_id)
 
     if spend_result == "banned":
