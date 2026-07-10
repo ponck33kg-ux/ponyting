@@ -98,7 +98,7 @@ def get_profile_keyboard() -> InlineKeyboardMarkup:
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
-    _, is_new = await get_or_create_user(
+    user_row, is_new = await get_or_create_user(
         message.from_user.id,
         username=message.from_user.username,
         first_name=message.from_user.first_name
@@ -114,10 +114,16 @@ async def cmd_start(message: Message):
 
     await _set_character(user_id, CHARACTER_KEY, message.from_user.first_name)
 
-    await message.answer(
-        "🎁 Подпишись на наш канал и получи3 дня подписки бесплатно!",
-        reply_markup=get_channel_keyboard()
+    user_row, _ = await get_or_create_user(
+        message.from_user.id,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name
     )
+    if not user_row["channel_bonus_given"]:
+        await message.answer(
+            "🎁 Подпишись на наш канал и получи 3 дня подписки бесплатно!",
+            reply_markup=get_channel_keyboard()
+        )
 
     name = message.from_user.first_name
     greeting_line = f"Привет, {name}! 👋" if name else "Привет! 👋"
@@ -127,7 +133,8 @@ async def cmd_start(message: Message):
         f"Расскажи - как ты сегодня?\n\n"
         f"/start — начать заново\n"
         f"/clear — очистить историю\n"
-        f"/subscribe — подписка"
+        f"/subscribe — подписка\n"
+        f"/profile — профиль"
     )
 
 
@@ -412,6 +419,7 @@ async def on_startup(app: web.Application):
         BotCommand(command="start", description="начать заново"),
         BotCommand(command="clear", description="очистить историю"),
         BotCommand(command="subscribe", description="подписка"),
+        BotCommand(command="profile", description="профиль"),
     ])
     asyncio.create_task(set_webhook_delayed())
     print("Бот запущен")
