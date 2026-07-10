@@ -12,7 +12,7 @@ from aiogram.types import (
     PreCheckoutQuery, LabeledPrice
 )
 from aiogram.filters import CommandStart, Command
-from aiogram.types import FSInputFile
+from aiogram.types import BotCommand
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 from analytics import log_turn
@@ -57,11 +57,10 @@ def load_character(filename: str) -> dict:
         return data
 
 
+CHARACTER_KEY = "ponyting"
+
 CHARACTERS = {
-    "duckling": {"yaml": "duckling.yaml", "image": "images/duckling.jpg", "label": "Уточка Поддержки"},
-    "capybara": {"yaml": "capybara.yaml", "image": "images/capybara.jpg", "label": "Капибара Объятий"},
-    "kitten":   {"yaml": "kitten.yaml",   "image": "images/kitten.jpg",   "label": "Котёнок Принятия"},
-    "puppy":    {"yaml": "puppy.yaml",    "image": "images/puppy.jpg",    "label": "Лапочка Понимания"},
+    CHARACTER_KEY: {"yaml": "ponyting.yaml", "label": "Нытинг"},
 }
 
 CHARACTER_DATA: dict = {}
@@ -75,18 +74,6 @@ dp = Dispatcher()
 
 
 # ── Кнопки ────────────────────────────────────────────────────────────────────
-
-def get_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🦆 Уточка Поддержки", callback_data="char_duckling"),
-            InlineKeyboardButton(text="🐹 Капибара Объятий", callback_data="char_capybara"),
-        ],
-        [
-            InlineKeyboardButton(text="🐱 Котёнок Принятия", callback_data="char_kitten"),
-            InlineKeyboardButton(text="🐶 Лапочка Понимания",  callback_data="char_puppy"),
-        ],
-    ])
 
 def get_topup_button() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -103,11 +90,9 @@ def get_channel_keyboard() -> InlineKeyboardMarkup:
 def get_profile_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ Пополнить баланс", callback_data="show_topup")],
-        [InlineKeyboardButton(text="💬 Начать диалог",    callback_data="show_menu")],
         [InlineKeyboardButton(text="📢 Канал Нытика",     url="https://t.me/po_nyting")],
         [InlineKeyboardButton(text="💌 Support",          url="https://t.me/BestieSupport_Bot")],
     ])
-
 
 # ── Команды ───────────────────────────────────────────────────────────────────
 
@@ -119,95 +104,53 @@ async def cmd_start(message: Message):
         username=message.from_user.username,
         first_name=message.from_user.first_name
     )
-    
-    args = message.text.split()
-    ref_code = None
-    char_key = None
 
-    if len(args) > 1 and args[1].startswith("ref_"):
-        parts = args[1][4:].rsplit("_", 1)
-        if len(parts) == 2 and parts[1] in CHARACTERS:
-            ref_code = parts[0]
-            char_key = parts[1]
-        else:
-            ref_code = args[1][4:]
+    args = message.text.split()
+    ref_code = args[1][4:] if len(args) > 1 and args[1].startswith("ref_") else None
 
     if ref_code:
         await track_referral_click(ref_code, user_id)
         if is_new:
             await track_referral_conversion(ref_code, user_id)
 
-    if char_key:
-        character = await _set_character(user_id, char_key, message.from_user.first_name)
-        await _send_greeting(user_id, char_key, message, character)
-        return
-            
+    await _set_character(user_id, CHARACTER_KEY, message.from_user.first_name)
+
     await message.answer(
-        "🎁 Подпишись на наш канал и получи +3 сообщения бесплатно!",
+        "🎁 Подпишись на наш канал и получи +10 сообщений бесплатно!",
         reply_markup=get_channel_keyboard()
     )
 
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="💬 Быстрый чат")]],
-        resize_keyboard=True,
-        persistent=True
-    )
+    name = message.from_user.first_name
+    greeting_line = f"Привет, {name}! 👋" if name else "Привет! 👋"
+
     await message.answer(
-        "Привет! Здесь можно поныть сколько влезет — без осуждения и непрошеных советов 🌦️\n\n"
-        "Выбери 'Быстрый чат', чтобы сразу начать разговор, или напиши /profile, "
-        "чтобы узнать баланс и выбрать с кем поговорить.",
-        reply_markup=keyboard
+        f"{greeting_line} Здесь можно поныть сколько влезет. Я буду слушать и поддерживать тебя. "
+        f"Расскажи - как ты сегодня?\n\n"
+        f"/start — начать заново\n"
+        f"/clear — очистить историю\n"
+        f"/subscribe — подписка"
     )
 
-@dp.message(F.text == "💬 Быстрый чат")
-async def quick_chat_button(message: Message):
-    await message.answer(
-        "С кем хочешь поговорить?",
-        reply_markup=get_menu()
-    )
-
-@dp.message(Command("chat"))
-async def cmd_chat(message: Message):
-    await message.answer(
-        "С кем хочешь поговорить?",
-        reply_markup=get_menu()
-    )
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
     await _send_profile(message.from_user.id, reply_to=message)
 
-@dp.callback_query(F.data == "show_menu")
-async def show_menu_callback(callback: CallbackQuery):
-    await callback.message.answer("С кем хочешь поговорить?", reply_markup=get_menu())
-    try:
-        await callback.answer()
-    except Exception:
-        pass
+@dp.message(Command("clear"))
+async def cmd_clear(message: Message):
+    await clear_chat_history(message.from_user.id)
+    await message.answer("История очищена 🧹 Давай начнём с чистого листа.")
+
+@dp.message(Command("subscribe"))
+async def cmd_subscribe(message: Message):
+    await message.answer(
+        "Подписка скоро появится здесь 🚧 А пока можно пополнить баланс сообщений:",
+        reply_markup=get_topup_button()
+    )
 
 @dp.callback_query(F.data == "show_topup")
 async def show_topup_callback(callback: CallbackQuery):
     await callback.message.answer("Выбери пакет:", reply_markup=get_topup_button())
-    try:
-        await callback.answer()
-    except Exception:
-        pass
-
-@dp.callback_query(F.data.startswith("char_"))
-async def choose_character(callback: CallbackQuery):
-    char_key = callback.data.replace("char_", "")
-    user_id = callback.from_user.id
-
-    if char_key not in CHARACTERS:
-        try:
-            await callback.answer("персонаж не найден")
-        except Exception:
-            pass
-        return
-
-    character = await _set_character(user_id, char_key, callback.from_user.first_name)
-    await _send_greeting(user_id, char_key, callback.message, character)
-
     try:
         await callback.answer()
     except Exception:
@@ -290,7 +233,7 @@ async def check_subscription(callback: CallbackQuery):
     given = await give_channel_bonus(user_id)
     if given:
         await callback.answer(
-            "Спасибо за подписку! +3 сообщения зачислены 💖",
+            "Спасибо за подписку! +10 сообщений зачислено 💖",
             show_alert=True
         )
         await callback.message.delete()
@@ -315,17 +258,7 @@ async def handle_message(message: Message):
     character = await get_user_character(user_id)
 
     if not character:
-        keyboard = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="💬 Быстрый чат")]],
-            resize_keyboard=True,
-            persistent=True
-        )
-        await message.answer(
-            "с кем хочешь поговорить:",
-            reply_markup=get_menu()
-        )
-        await message.answer("или нажми кнопку ниже 👇", reply_markup=keyboard)
-        return
+        character = await _set_character(user_id, CHARACTER_KEY, message.from_user.first_name)
 
     await get_or_create_user(user_id, username=message.from_user.username, first_name=message.from_user.first_name)
 
@@ -420,20 +353,11 @@ async def _set_character(user_id: int, char_key: str, first_name: str) -> dict:
     character = {
         "prompt": character_data["system_instruction"],
         "name": char["label"],
-        "greeting": character_data["greeting"],
         "user_name": first_name or "друг"
     }
     await set_user_character(user_id, character)
     await clear_chat_history(user_id)
     return character
-
-async def _send_greeting(user_id: int, char_key: str, message: Message, character: dict):
-    char = CHARACTERS[char_key]
-    greeting = character["greeting"].replace(
-        "{name}", character["user_name"]
-    )
-    photo = FSInputFile(char["image"])
-    await message.answer_photo(photo=photo, caption=greeting)
 
 async def _send_profile(user_id: int, reply_to: Message = None):
     balance_data = await get_user_balance(user_id)
@@ -484,6 +408,11 @@ async def on_startup(app: web.Application):
     await init_users_db()
     await init_redis()
     await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_my_commands([
+        BotCommand(command="start", description="начать заново"),
+        BotCommand(command="clear", description="очистить историю"),
+        BotCommand(command="subscribe", description="подписка"),
+    ])
     asyncio.create_task(set_webhook_delayed())
     print("Бот запущен")
 

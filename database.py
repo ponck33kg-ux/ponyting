@@ -253,7 +253,7 @@ async def grant_messages(user_id: int, amount: int):
 
 async def give_channel_bonus(user_id: int) -> bool:
     """
-    Начислить бонус за подписку на канал (3 сообщения, один раз).
+    Начислить бонус за подписку на канал (10 сообщений, один раз).
     Возвращает True если бонус выдан, False если уже был выдан ранее.
     """
     async with pool.acquire() as conn:
@@ -267,16 +267,16 @@ async def give_channel_bonus(user_id: int) -> bool:
  
             await conn.execute("""
                 UPDATE users
-                SET messages_balance = messages_balance + 3,
+                SET messages_balance = messages_balance + 10,
                     channel_bonus_given = TRUE
                 WHERE user_id = $1
             """, user_id)
             await conn.execute("""
                 INSERT INTO transactions (user_id, type, messages_amount)
-                VALUES ($1, 'channel_bonus', 3)
+                VALUES ($1, 'channel_bonus', 10)
             """, user_id)
             return True
-
+        
 async def track_referral_click(code: str, user_id: int):
     async with pool.acquire() as conn:
         await conn.execute("""
