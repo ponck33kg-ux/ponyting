@@ -39,8 +39,8 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 CHANNEL_USERNAME = "@po_nyting"
 
 SUBSCRIPTIONS = {
-    "sub_week":  {"stars": 1, "days": 7,  "label": "Неделя безлимита — 1 ⭐ (ТЕСТ)"},
-    "sub_month": {"stars": 1, "days": 30, "label": "Месяц безлимита — 1 ⭐ (ТЕСТ)"},
+    "sub_week":  {"stars": 250, "days": 7,  "label": "Неделя безлимита — 250 ⭐"},
+    "sub_month": {"stars": 650, "days": 30, "label": "Месяц безлимита — 650 ⭐"},
 }
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
