@@ -129,13 +129,8 @@ async def cmd_start(message: Message):
     greeting_line = f"Привет, {name}! 👋" if name else "Привет! 👋"
 
     await message.answer(
-        f"{greeting_line} Здесь можно поныть сколько влезет. Я буду слушать и поддерживать тебя. "
-        f"Расскажи - как ты сегодня?\n\n"
-        f"/start — начать заново\n"
-        f"/clear — очистить историю\n"
-        f"/subscribe — подписка\n"
-        f"/profile — профиль"
-    )
+        f"{greeting_line} Я здесь, чтобы выслушать и поддержать тебя. Расскажи — как ты сегодня? "
+       )
 
 
 @dp.message(Command("profile"))
